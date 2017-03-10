@@ -1,0 +1,52 @@
+#!/usr/bin/perl
+use 5.24.0;
+use File::Basename;
+use File::Spec;
+use constant DIR => File::Spec->catdir(dirname(__FILE__), "..");
+use lib File::Spec->catdir(DIR, "lib"), File::Spec->catdir(DIR, "local/lib/perl5");
+
+use BugButler;
+use Plack::Runner;
+use IO::Async::Loop;
+use IO::Async::SSL;
+use IO::Async::Timer::Countdown;
+use IO::Async::Timer::Periodic;
+use Data::Printer;
+
+my $butler = BugButler->new;
+my $loop = IO::Async::Loop->new;
+
+my $irc = $butler->irc;
+
+my $periodic = IO::Async::Timer::Periodic->new(
+    first_interval => 0,
+    interval => 60 * 60,
+
+    on_tick => sub {
+        $irc->say("BUTLER!");
+    },
+);
+
+$loop->add($periodic);
+
+my $countdown = IO::Async::Timer::Countdown->new(
+    delay => 1,
+    on_expire => sub {
+        $irc->login->get();
+        $butler->dispatcher->do_startup();
+        $periodic->start;
+    },
+);
+
+$countdown->start;
+$loop->add( $countdown );
+
+my $runner = Plack::Runner->new;
+$runner->parse_options(
+    "-s", "Net::Async::HTTP::Server",
+    "--listen" => $butler->http_listen,
+);
+$runner->run($butler->webhook_app);
+
+
+

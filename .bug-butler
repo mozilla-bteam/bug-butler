@@ -1,0 +1,17 @@
+[http]
+listen = :5050
+
+[github]
+token = FAKE
+webhook_secret = foo
+
+[bugzilla]
+api_key  = FAKE
+rest_uri = https://bugzilla.mozilla.org/rest
+
+[irc]
+nick = bugbutler
+host = irc.fake
+port = 6697
+channel = "#bots"
+
