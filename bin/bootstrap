@@ -1,0 +1,5 @@
+#!/bin/bash
+
+curl -L https://raw.githubusercontent.com/skaji/relocatable-perl/master/perl-install | bash -s perl
+curl -L https://cpanmin.us | ./perl/bin/perl - Carton
+./perl/bin/perl perl/bin/carton install

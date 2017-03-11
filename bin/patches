@@ -1,13 +1,12 @@
-#!/usr/bin/env perl
+#!/usr/bin/perl
 use 5.24.0;
 use File::Basename;
 use File::Spec;
-use Cwd;
-use constant DIR => Cwd::realpath(File::Spec->catdir(dirname(__FILE__), ".."));
+use constant DIR => File::Spec->catdir(dirname(__FILE__), "..");
 use lib File::Spec->catdir(DIR, "lib"), File::Spec->catdir(DIR, "local/lib/perl5");
 
 use BugButler;
-
-BugButler->new->run;
+use Data::Printer;
+BugButler->new->bugzilla->generate_reports;
 
 

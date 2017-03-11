@@ -1,0 +1,18 @@
+[http]
+listen = :5050
+
+[github]
+token =  CHANGEME
+webhook_secret = CHANGEME
+
+[bugzilla]
+api_key  = CHANGEME 
+rest_uri = https://bugzilla.mozilla.org
+
+[irc]
+nick = bugbutler
+host = CHANGEME
+# only supports ssl
+port = 6697
+channel = "#bots"
+

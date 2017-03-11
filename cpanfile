@@ -10,3 +10,4 @@ requires 'Net::Async::IRC';
 requires 'Pithub';
 requires 'Plack::App::GitHub::WebHook';
 requires 'Plack::Middleware::HubSignature';
+requires 'Type::Tiny';

@@ -23,10 +23,10 @@ package BugButler::IRC {
         });
     }
 
-    sub say($self, $text) {
+    sub say($self, $target, $text) {
         warn "say $text\n";
         $self->_irc->do_PRIVMSG(
-            target => $self->irc_channel,
+            target => $target // $self->irc_channel,
             text => $text,
         );
     }
