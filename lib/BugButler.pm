@@ -14,16 +14,21 @@ package BugButler 1.0 {
     use IO::Async::SSL;
     use IO::Async::Timer::Countdown;
     use IO::Async::Timer::Periodic;
-    use Net::Async::IRC;
     use JSON::MaybeXS;
+    use Net::Async::IRC;
     use Pithub;
+    use Plack::App::Directory::Xslate;
     use Plack::App::GitHub::WebHook;
+    use Plack::Middleware::ReverseProxy;
     use Plack::Runner;
 
     has 'config'      => ( is => 'lazy' );
     has 'bugzilla'    => ( is => 'lazy' );
     has 'pithub'      => ( is => 'lazy' );
+    has 'app'         => ( is => 'lazy' );
+    has 'xslate_app'  => ( is => 'lazy' );
     has 'webhook_app' => ( is => 'lazy' );
+    has 'report'      => ( is => 'rw'   );
 
     has 'runner' => (
         is      => 'lazy',
@@ -37,9 +42,37 @@ package BugButler 1.0 {
         handles => ['say'],
     );
 
-    sub do_startup($self) { }
+    sub do_startup($self) {
+    }
+
+    my %english = (
+        unassigned_with_patches => "open unassigned bugs with patches",
+        reviewed_patches => "open bugs with reviewed patches",
+    );
 
     sub do_tick($self) {
+        my $report = $self->bugzilla->generate_report;
+
+        my $prs = $self->pithub->pull_requests(user => 'mozilla-bteam', repo => 'bmo')->list;
+        while (my $pr = $prs->next) {
+            if ($pr->{title} =~ /bug\s+#?(\d+)/ai) {
+                my $bug_id = $1;
+                my $bug = $self->bugzilla->get_bug($bug_id)->get->[0];
+                if ($bug->{resolved} && $pr->{state} ne 'closed') {
+                    $report->{open_pull_requests}{$bug_id} = $bug;
+                }
+            }
+        }
+        $self->report($report);
+        my @info;
+        foreach my $key (sort keys %$report) {
+            my $count = keys $report->{$key}->%*;
+            my $text = $english{$key} // $key;
+            push @info, "$count $text";
+        }
+        $self->say(undef, join(", ", @info));
+        my $url = "https://bug-butler.hardison.net";
+        $self->say(undef, "Details: $url/xslate/report.tt");
     }
 
     sub do_github($self, $payload, $event, $delivery, $logger) {
@@ -65,9 +98,6 @@ package BugButler 1.0 {
             my $bugs = $self->bugzilla->search({quicksearch => "review? product=bugzilla.mozilla.org"}, 1)->get;
             $reply->("Found " . (@$bugs+0) . " bugs");
         }
-        else {
-            $reply->("What?");
-        }
     }
 
     sub on_github_ping($self, $payload) {
@@ -75,7 +105,11 @@ package BugButler 1.0 {
     }
 
     sub on_github_push($self, $payload) {
-
+        my $commits = $payload->{commits}->@*;
+        my $compare = $payload->{compare};
+        my $sender  = $payload->{sender}{login};
+        my $repo    = $payload->{repository}{full_name};
+        $self->say(undef, "$sender pushed $commits to $repo. Compare: $compare");
     }
 
     sub on_github_pull_request_review($self, $payload) {
@@ -85,8 +119,17 @@ package BugButler 1.0 {
 
     sub on_github_pull_request($self, $payload) {
         my $pr = $payload->{pull_request};
+        my $state;
 
-        $self->say("new pull request from $pr->{user}{login}: $pr->{html_url}");
+        if ($payload->{action} eq 'opened') {
+            $self->say(undef, "$pr->{user}{login} opened new pull request: $pr->{html_url}");
+        }
+        elsif ($payload->{action} eq 'closed') {
+            $self->say(undef, "$pr->{user}{login} closed pull request: $pr->{html_url}");
+        }
+        elsif ($payload->{action} eq 'edited') {
+            $self->say(undef, "$pr->{user}{login} edited pull request: $pr->{html_url}");
+        }
     }
 
     sub _build_bugzilla($self) {
@@ -100,12 +143,40 @@ package BugButler 1.0 {
         return Pithub->new(token => scalar $self->config->get(key => 'github.token'));
     }
 
+    sub _build_app($self) {
+        Scalar::Util::weaken($self);
+        package main {
+            use Plack::Builder;
+            return builder {
+                enable_if { $_[0]->{REMOTE_ADDR} eq '127.0.0.1' } "Plack::Middleware::ReverseProxy";
+                mount "/webhook" => $self->webhook_app;
+                mount "/xslate"  => $self->xslate_app;
+            };
+        };
+    }
+
+    sub _build_xslate_app($self) {
+        Scalar::Util::weaken($self);
+        my $json = JSON->new->canonical(1)->pretty(1)->utf8(1);
+        return Plack::App::Directory::Xslate->new(
+            root       => main::DIR . "/www",
+            xslate_opt => {
+                syntax => 'TTerse',
+                module => ['Text::Xslate::Bridge::Star'],
+            },
+            xslate_param => {
+                report => sub { $self->report // {} },
+            },
+            xslate_path  => qr{\.tt$},
+        )->to_app;
+    }
+
     sub _build_webhook_app($self) {
         Scalar::Util::weaken($self);
-        return Plack::App::GitHub::WebHook->new(
+        Plack::App::GitHub::WebHook->new(
             hook => sub { $self->do_github(@_) },
-            #secret => $self->config->get(key => 'github.webhook_secret'),
-            access => [allow => '127.0.0.1'],
+            secret => $self->config->get(key => 'github.webhook_secret'),
+            access => 'github',
         )->to_app;
     }
 
@@ -151,7 +222,7 @@ package BugButler 1.0 {
         my $loop = IO::Async::Loop->new;
         my $periodic = IO::Async::Timer::Periodic->new(
             first_interval => 0,
-            interval       => 60 * 60,
+            interval       => 60 * 60 * 12,
 
             on_tick => sub {
                 $self->do_tick();
@@ -174,9 +245,7 @@ package BugButler 1.0 {
     sub _build_runner($self) {
         my $irc = $self->irc;
 
-        my $runner = Plack::Runner->new(
-            app => $self->webhook_app,
-        );
+        my $runner = Plack::Runner->new( app => $self->app );
         $runner->parse_options(
             '-s' => 'Net::Async::HTTP::Server',
             '--listen' => $self->config->get(key => 'http.listen'),

@@ -31,7 +31,7 @@ package BugButler::Bugzilla {
         return $f;
     }
 
-    sub generate_reports($self) {
+    sub generate_report($self) {
         my $bugs = $self->bugs_with_patches->get;
         my %report;
 
@@ -45,6 +45,8 @@ package BugButler::Bugzilla {
                 $report{unassigned_with_patches}{$bug->{id}} = $bug;
             }
         }
+
+        return \%report;
     }
 
     sub bugs_with_patches($self) {

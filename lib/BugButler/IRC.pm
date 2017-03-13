@@ -3,6 +3,7 @@ use experimental 'signatures';
 
 package BugButler::IRC {
     use Moo;
+    use Encode;
     no warnings 'experimental';
 
     has 'irc_host'    => ( is => 'ro', required => 1 );
@@ -24,7 +25,7 @@ package BugButler::IRC {
     }
 
     sub say($self, $target, $text) {
-        warn "say $text\n";
+        $text = encode('utf8', $text);
         $self->_irc->do_PRIVMSG(
             target => $target // $self->irc_channel,
             text => $text,
