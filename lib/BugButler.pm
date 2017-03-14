@@ -21,6 +21,8 @@ package BugButler 1.0 {
     use Plack::App::GitHub::WebHook;
     use Plack::Middleware::ReverseProxy;
     use Plack::Runner;
+    use MIME::Base64 qw(encode_base64 decode_base64);
+    use List::Util qw(any);
 
     has 'config'      => ( is => 'lazy' );
     has 'bugzilla'    => ( is => 'lazy' );
@@ -50,20 +52,77 @@ package BugButler 1.0 {
         reviewed_patches => "open bugs with reviewed patches",
     );
 
-    sub do_tick($self) {
-        my $report = $self->bugzilla->generate_report;
+    sub _rebuild_bugzilla_report($self) {
+        my $bugs_with_patches = $self->bugzilla->bugs_with_patches->get;
+        my %report;
+        my %bug_cache;
+        foreach my $bug (@$bugs_with_patches) {
+            $bug_cache{$bug->{id}} = $bug;
+            foreach my $patch ($bug->{attachments}->@*) {
+                if (any { $_->{name} eq 'review' && $_->{status} eq '+' } $patch->{flags}->@*) {
+                    $report{reviewed_patches}{$bug->{id}} = $bug;
+                }
+            }
+            if (lc($bug->{assigned_to}) eq 'nobody@mozilla.org' || $bug->{assigned_to} =~ /\.bugs$/i) {
+                $report{unassigned_with_patches}{$bug->{id}} = $bug;
+            }
+        }
 
         my $prs = $self->pithub->pull_requests(user => 'mozilla-bteam', repo => 'bmo')->list;
         while (my $pr = $prs->next) {
             if ($pr->{title} =~ /bug\s+#?(\d+)/ai) {
                 my $bug_id = $1;
-                my $bug = $self->bugzilla->get_bug($bug_id)->get->[0];
-                if ($bug->{resolved} && $pr->{state} ne 'closed') {
-                    $report->{open_pull_requests}{$bug_id} = $bug;
+                if (not $bug_cache{$bug_id}) {
+                    # probably no patch
+                    warn "going to attach $pr->{number} to bug $bug_id";
+                    eval {
+                        my $result = $self->_attach_pull_request($bug_id, $pr)->get;
+                        warn "yay!";
+                        p $result;
+                    };
+                    if ($@) {
+                        warn "$@\n";
+                    }
+
                 }
             }
         }
-        $self->report($report);
+
+        $self->report(\%report);
+    }
+
+    sub _attach_pull_request($self, $bug_id, $pr) {
+        my $url  = $pr->{html_url};
+        my $file = "$pr->{number}.patch";
+        return $self->bugzilla->get_bug($bug_id, 'product,component')->then(sub ($bugs) {
+            my $bug = $bugs->[0];
+            if ($bug->{product} ne 'bugzilla.mozilla.org') {
+                return IO::Async::Loop->new->new_future->fail("not a bmo bug");
+            }
+            return $self->bugzilla->get_attachments($bug_id, 'data')->then(sub ($bugs) {
+                my $attachments = $bugs->{$bug_id};
+                foreach my $attachment ($attachments->@*) {
+                    if (decode_base64($attachment->{data}) eq $url) {
+                        return IO::Async::Loop->new->new_future->fail("already attached");
+                    }
+                }
+                return $self->bugzilla->add_attachment(
+                    $bug_id,
+                    {
+                        summary      => "github pull request",
+                        file_name    => $file,
+                        content_type => 'text/plain',
+                        data         => encode_base64( $url, "" ),
+                    },
+                );
+            });
+        });
+    }
+
+    sub do_tick($self) {
+        $self->_rebuild_bugzilla_report();
+        my $report = $self->report;
+
         my @info;
         foreach my $key (sort keys %$report) {
             my $count = keys $report->{$key}->%*;
@@ -115,6 +174,9 @@ package BugButler 1.0 {
     sub on_github_pull_request_review($self, $payload) {
         my $r  = $payload->{review};
         my $pr = $payload->{pull_request};
+        if ($payload->{action} eq 'submitted') {
+            $self->say(undef, "$r->{user}{login} reviewed pull request $pr->{number}: $r->{html_url}");
+        }
     }
 
     sub on_github_pull_request($self, $payload) {

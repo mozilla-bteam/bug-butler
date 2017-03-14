@@ -14,13 +14,14 @@ package BugButler::Bugzilla {
     use Type::Utils qw(class_type);
     use Data::Printer;
     use List::Util qw(any);
+    use Ref::Util qw(:all);
 
     use constant BUG_FIELDS        => 'summary,priority,status,resolution,product,component,id,flags,assigned_to';
     use constant ATTACHMENT_FIELDS => 'flags,file_name,summary,description,content_type,is_patch,is_obsolete,attacher';
 
     has 'api_key'  => ( is => 'ro',   required => 1 );
     has 'rest_uri' => ( is => 'ro',   required => 1, isa => class_type('URI') );
-    has 'http'     => ( is => 'lazy', handles  => [qw[ do_request GET ]] );
+    has 'http'     => ( is => 'lazy', handles  => [qw[ do_request GET POST ]] );
 
     sub get_bug($self, $bug_id, $fields = BUG_FIELDS) {
         my $uri = $self->rest_uri->clone;
@@ -72,6 +73,21 @@ package BugButler::Bugzilla {
         );
     }
 
+    sub add_attachment($self, $bug_id, $params) {
+        my $uri = $self->rest_uri->clone;
+        $uri->path("/rest/bug/$bug_id/attachment");
+        $uri->query_form(Bugzilla_api_key => $self->api_key);
+
+        my $f = IO::Async::Loop->new->new_future;
+        $self->POST(
+            $uri,
+            encode_json($params),
+            content_type => 'application/json',
+            on_response => _handle_response($f),
+        );
+        return $f;
+    }
+
     sub search($self, $params, $include_attachments) {
         my $uri = $self->rest_uri->clone;
         $uri->path("/rest/bug");
@@ -98,7 +114,17 @@ package BugButler::Bugzilla {
 
     sub get_attachments($self, $bugs, $fields = ATTACHMENT_FIELDS) {
         my $uri = $self->rest_uri->clone;
-        my @bug_id = map { $_->{id} } @$bugs;
+        my @bug_id;
+        if (is_arrayref($bugs) && is_hashref($bugs->[0])) {
+            @bug_id = map { $_->{id} } @$bugs;
+        }
+        elsif (is_arrayref($bugs)) {
+            @bug_id = @$bugs;
+        }
+        else {
+            @bug_id = ($bugs);
+        }
+
         $uri->path("/rest/bug/$bug_id[0]/attachment");
         $uri->query_form(include_fields => $fields, ids => \@bug_id);
         my $attachments_f = IO::Async::Loop->new->new_future;
@@ -108,7 +134,7 @@ package BugButler::Bugzilla {
 
     sub _handle_response($f, $pick = undef) {
         return sub($response) {
-            if ($response->code == 200) {
+            if ($response->code >= 200 && $response->code <= 299) {
                 eval {
                     my $data = decode_json($response->content);
                     if (defined $pick) {
@@ -119,7 +145,7 @@ package BugButler::Bugzilla {
                 $f->fail($@) if $@;
             }
             else {
-                $f->fail("Bad HTTP Response: " . $response->code);
+                $f->fail("Bad HTTP Response: " . $response->code . "\n" . $response->content);
             }
         }
     }

@@ -14,3 +14,4 @@ requires 'Plack::Middleware::HubSignature';
 requires 'Plack::Middleware::ReverseProxy';
 requires 'Type::Tiny';
 requires 'Text::Xslate::Bridge::Star';
+requires 'Ref::Util';
